@@ -45,7 +45,6 @@ class NIHChestDataset(Dataset):
         img_path = os.path.join(self.img_dir, row["Image Index"])
         image = Image.open(img_path).convert("RGB")
 
-
         if self.transform:
             image = self.transform(image)
 
@@ -91,29 +90,36 @@ def make_loaders(data_dir: str, img_size: int, batch_size: int, num_workers: int
     csv_path = os.path.join(data_dir, "Data_Entry_2017.csv")
     df = pd.read_csv(csv_path)
 
-    # Reproducable train/val/test split: 70/15/15
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # shuffle
-    n = len(df)
-    train_end = int(0.70 * n)
-    val_end   = int(0.85 * n)
+    # Patient-level train/val/test split: 70/15/15
+    # Splitting by Patient ID prevents the same patient appearing in multiple
+    # splits, which would allow the model to learn patient identity shortcuts
+    # rather than genuine pathological features (patient leakage).
+    patient_ids = df["Patient ID"].unique()
+    rng = np.random.default_rng(seed=42)
+    rng.shuffle(patient_ids)
 
-    train_df = df.iloc[:train_end].reset_index(drop=True)
-    val_df   = df.iloc[train_end:val_end].reset_index(drop=True)
-    test_df  = df.iloc[val_end:].reset_index(drop=True)
+    n = len(patient_ids)
+    train_ids = set(patient_ids[:int(0.70 * n)])
+    val_ids   = set(patient_ids[int(0.70 * n):int(0.85 * n)])
+    test_ids  = set(patient_ids[int(0.85 * n):])
+
+    train_df = df[df["Patient ID"].isin(train_ids)].reset_index(drop=True)
+    val_df   = df[df["Patient ID"].isin(val_ids)].reset_index(drop=True)
+    test_df  = df[df["Patient ID"].isin(test_ids)].reset_index(drop=True)
 
     img_dir = os.path.join(data_dir, "images")
     train_ds = NIHChestDataset(train_df, img_dir, transform=train_tf)
-    val_ds   = NIHChestDataset(val_df, img_dir, transform=eval_tf)
-    test_ds  = NIHChestDataset(test_df, img_dir, transform=eval_tf)
+    val_ds   = NIHChestDataset(val_df,   img_dir, transform=eval_tf)
+    test_ds  = NIHChestDataset(test_df,  img_dir, transform=eval_tf)
 
     # Multi-label Weighted sampling to handle class imbalance
     # Strategy: weight each sample by the rarity of its rarest positive label
     # This ensures uncommon conditions get adequate representation during training
-    label_matrix = _build_label_matrix(train_df)  # (N, NUM_CLASSES)
+    label_matrix = _build_label_matrix(train_df)                 # (N, NUM_CLASSES)
     label_counts = label_matrix.sum(axis=0).clip(min=1)          # count per label
-    label_weights = 1.0 / label_counts                            # inverse frequency
-    sample_weights = label_matrix.dot(label_weights)              # sum weights of positive labels
-    sample_weights = sample_weights / sample_weights.sum()        # normalize
+    label_weights = 1.0 / np.sqrt(label_counts)                  # inverse frequency smoothed by sqrt
+    sample_weights = label_matrix.dot(label_weights)             # sum weights of positive labels
+    sample_weights = sample_weights / sample_weights.sum()       # normalize
 
     sampler = WeightedRandomSampler(
         weights=sample_weights.tolist(),
