@@ -3,8 +3,10 @@ torchvision
 torchaudio
 numpy
 pyyaml
+pandas
 tqdm
 scikit-learn
 matplotlib
 torchmetrics
 opencv-python
+torchxrayvision
