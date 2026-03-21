@@ -1,15 +1,16 @@
 import argparse, yaml, torch
 import numpy as np
-from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score
+from sklearn.metrics import roc_auc_score
 
 from data import make_loaders, LABELS, NUM_CLASSES
+from architectures import build_model
+
 
 def main(cfg, ckpt_path):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     _, _, test_loader = make_loaders(cfg["data_dir"], cfg["img_size"],
                                      cfg["batch_size"], cfg["num_workers"])
     ckpt = torch.load(ckpt_path, map_location=device)
-    from model import build_model
     model = build_model(cfg["model_name"], cfg["pretrained"], 
                         num_classes=NUM_CLASSES).to(device)
     model.load_state_dict(ckpt["model_state"])
@@ -49,6 +50,7 @@ def main(cfg, ckpt_path):
 
     print("-" * 50)
     print(f"{'Mean AUC':<25} {np.mean(aucs):>6.4f}")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

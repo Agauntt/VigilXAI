@@ -9,7 +9,7 @@ from torchmetrics.classification import MultilabelAUROC
 
 from utils import set_seed, ensure_dir
 from data import make_loaders, NUM_CLASSES
-from model import build_model
+from architectures import build_model
 
 
 def run_epoch(model, loader, optimizer, device, train: bool):
@@ -69,6 +69,8 @@ def main(cfg):
         if va_auc > best_auc:
             best_auc = va_auc
             epochs_without_improvement = 0
+            torch.save({'model_state': model.state_dict(), 'cfg': cfg}, best_path)
+            print(f"---New best val AUROC: {best_auc:.4f} — checkpoint saved")
         else:
             epochs_without_improvement += 1
             print(f"  No improvement ({epochs_without_improvement}/{patience})")

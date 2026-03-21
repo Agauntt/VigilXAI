@@ -9,3 +9,4 @@ scikit-learn
 matplotlib
 torchmetrics
 opencv-python
+torchxrayvision

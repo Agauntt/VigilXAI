@@ -2,6 +2,7 @@ import os
 import torch
 import pandas as pd
 import numpy as np
+import torchxrayvision as xrv
 
 from PIL import Image
 from torchvision import datasets, transforms
@@ -32,10 +33,11 @@ class NIHChestDataset(Dataset):
         Pipe-delimited strings ("Pneumonia|Effusion") are parsed into
         a float32 binary vector of length NUM_CLASSES.
     """
-    def __init__(self, df: pd.DataFrame, img_dir: str, transform=None):
+    def __init__(self, df: pd.DataFrame, img_dir: str, transform=None, model_name: str = "densenet121"):
         self.df = df.reset_index(drop=True)
         self.img_dir = img_dir
         self.transform = transform
+        self.model_name = model_name
 
     def __len__(self):
         return len(self.df)
@@ -43,7 +45,13 @@ class NIHChestDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         img_path = os.path.join(self.img_dir, row["Image Index"])
-        image = Image.open(img_path).convert("RGB")
+        if self.model_name == "densenet121-xrv":
+            image = Image.open(img_path).convert("L")
+            image = np.array(image, dtype=np.float32)
+            image = image[np.newaxis, ...]
+            image = xrv.datasets.normalize(image, maxval=255, reshape=True)
+        else:
+            image = Image.open(img_path).convert("RGB")
 
         if self.transform:
             image = self.transform(image)
@@ -60,36 +68,51 @@ class NIHChestDataset(Dataset):
         return image, label
 
 
-def make_transforms(img_size: int):
-    train_tf = transforms.Compose([
-        transforms.Resize(int(img_size * 1.2)),
-        transforms.CenterCrop(img_size),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(10),
-        transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),  # minor patient positioning shifts
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),        # exposure/contrast variation between machines
-        transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.3), # varies image clarity
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                             std=[0.229, 0.224, 0.225])
-    ])
-    eval_tf = transforms.Compose([
-        transforms.Resize(int(img_size * 1.2)),
-        transforms.CenterCrop(img_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                             std=[0.229, 0.224, 0.225])
-    ])
+def make_transforms(img_size: int, model_name: str = "densenet121"):
+    if model_name == "densenet121-xrv":
+        # XRV pipeline: grayscale, XRV normalization to [-1024, 1024]
+        # XRayCenterCrop and XRayResizer handle sizing
+        train_tf = transforms.Compose([
+            xrv.datasets.XRayResizer(img_size),
+            xrv.datasets.XRayCenterCrop(),
+            # transforms.RandomHorizontalFlip(p=0.5),
+            # transforms.RandomRotation(10),
+        ])
+        eval_tf = transforms.Compose([
+            xrv.datasets.XRayResizer(img_size),
+            xrv.datasets.XRayCenterCrop(),
+        ])
+    else:
+        # Standard ImageNet pipeline for ResNet
+        train_tf = transforms.Compose([
+            transforms.Resize(int(img_size * 1.2)),
+            transforms.CenterCrop(img_size),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(10),
+            transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),  # minor patient positioning shifts
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),        # exposure/contrast variation between machines
+            transforms.RandomAdjustSharpness(sharpness_factor=2, p=0.3), # varies image clarity
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                std=[0.229, 0.224, 0.225])
+        ])
+        eval_tf = transforms.Compose([
+            transforms.Resize(int(img_size * 1.2)),
+            transforms.CenterCrop(img_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                std=[0.229, 0.224, 0.225])
+        ])
     return train_tf, eval_tf
 
 
-def make_loaders(data_dir: str, img_size: int, batch_size: int, num_workers: int):
-    train_tf, eval_tf = make_transforms(img_size)
+def make_loaders(data_dir: str, img_size: int, batch_size: int, num_workers: int, model_name: str = "densenet121"):
+    train_tf, eval_tf = make_transforms(img_size, model_name)
 
     # Load and split csv metadata
     csv_path = os.path.join(data_dir, "Data_Entry_2017.csv")
     df = pd.read_csv(csv_path)
-
+    df = df[df["View Position"] == "PA"].reset_index(drop=True)
     # Patient-level train/val/test split: 70/15/15
     # Splitting by Patient ID prevents the same patient appearing in multiple
     # splits, which would allow the model to learn patient identity shortcuts
@@ -108,9 +131,9 @@ def make_loaders(data_dir: str, img_size: int, batch_size: int, num_workers: int
     test_df  = df[df["Patient ID"].isin(test_ids)].reset_index(drop=True)
 
     img_dir = os.path.join(data_dir, "images")
-    train_ds = NIHChestDataset(train_df, img_dir, transform=train_tf)
-    val_ds   = NIHChestDataset(val_df,   img_dir, transform=eval_tf)
-    test_ds  = NIHChestDataset(test_df,  img_dir, transform=eval_tf)
+    train_ds = NIHChestDataset(train_df, img_dir, transform=train_tf, model_name=model_name)
+    val_ds   = NIHChestDataset(val_df,   img_dir, transform=eval_tf, model_name=model_name)
+    test_ds  = NIHChestDataset(test_df,  img_dir, transform=eval_tf, model_name=model_name)
 
     # Multi-label Weighted sampling to handle class imbalance
     # Strategy: weight each sample by the rarity of its rarest positive label
